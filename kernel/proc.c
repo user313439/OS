@@ -858,11 +858,10 @@ ps(int pid)
           printf("zombie\t\t");
         
         uint64 runtime_over_weight = 0;
-        if (p->weight != 0) {
+        if (p->weight > 0)
             runtime_over_weight = (p->runtime * 1000 * 1024) / p->weight;
-        }
         
-        printf("%d\t%l\t%l\t%l\t%l\t%s\t%l\n",
+        printf("%d\t%lu\t%lu\t%lu\t%lu\t%s\t%lu\n",
                p->nice,
                runtime_over_weight,
                p->runtime * 1000,
@@ -889,11 +888,10 @@ ps(int pid)
           printf("zombie\t\t");
         
         uint64 runtime_over_weight = 0;
-        if (p->weight != 0) {
+        if (p->weight > 0)
             runtime_over_weight = (p->runtime * 1000 * 1024) / p->weight;
-        }
         
-        printf("%d\t%l\t%l\t%l\t%l\t%s\t%l\n",
+        printf("%d\t%lu\t%lu\t%lu\t%lu\t%s\t%lu\n",
                p->nice,
                runtime_over_weight,
                p->runtime * 1000,
