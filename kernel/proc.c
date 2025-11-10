@@ -124,6 +124,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->nice = 20;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -686,5 +687,140 @@ procdump(void)
       state = "???";
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
+  }
+}
+
+int
+getnice(int pid)
+{
+  struct proc *p;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->pid == pid) {
+      int nice = p->nice;
+      release(&p->lock);
+      return nice;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+int
+setnice(int pid, int value)
+{
+  struct proc *p;
+  
+  if(value < 0 || value > 39)
+    return -1;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->pid == pid) {
+      p->nice = value;
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+void
+ps(int pid)
+{
+  struct proc *p;
+  
+  if(pid == 0) {
+    printf("name\tpid\tstate\t\tpriority\n");
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state != UNUSED) {
+        printf("%s\t%d\t", p->name, p->pid);
+        if(p->state == SLEEPING)
+          printf("SLEEPING\t");
+        else if(p->state == RUNNABLE)
+          printf("RUNNABLE\t");
+        else if(p->state == RUNNING)
+          printf("RUNNING\t\t");
+        else
+          printf("ZOMBIE\t\t");
+        printf("%d\n", p->nice);
+      }
+      release(&p->lock);
+    }
+  } else {
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->pid == pid && p->state != UNUSED) {
+        printf("name\tpid\tstate\t\tpriority\n");
+        printf("%s\t%d\t", p->name, p->pid);
+        if(p->state == SLEEPING)
+          printf("SLEEPING\t");
+        else if(p->state == RUNNABLE)
+          printf("RUNNABLE\t");
+        else if(p->state == RUNNING)
+          printf("RUNNING\t\t");
+        else
+          printf("ZOMBIE\t\t");
+        printf("%d\n", p->nice);
+        release(&p->lock);
+        return;
+      }
+      release(&p->lock);
+    }
+  }
+}
+
+uint64
+meminfo(void)
+{
+  uint64 free_mem = 0;
+  struct run *r;
+  
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  while(r) {
+    free_mem += PGSIZE;
+    r = r->next;
+  }
+  release(&kmem.lock);
+  
+  return free_mem;
+}
+
+int
+waitpid(int pid)
+{
+  struct proc *np;
+  int found;
+  struct proc *p = myproc();
+  
+  acquire(&wait_lock);
+  
+  for(;;) {
+    found = 0;
+    for(np = proc; np < &proc[NPROC]; np++) {
+      acquire(&np->lock);
+      if(np->pid == pid) {
+        found = 1;
+        if(np->state == ZOMBIE) {
+          release(&np->lock);
+          release(&wait_lock);
+          return 0;
+        }
+        release(&np->lock);
+        break;
+      }
+      release(&np->lock);
+    }
+    
+    if(!found) {
+      release(&wait_lock);
+      return -1;
+    }
+    
+    sleep(p, &wait_lock);
   }
 }
