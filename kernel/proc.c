@@ -773,23 +773,6 @@ ps(int pid)
   }
 }
 
-uint64
-meminfo(void)
-{
-  uint64 free_mem = 0;
-  struct run *r;
-  
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  while(r) {
-    free_mem += PGSIZE;
-    r = r->next;
-  }
-  release(&kmem.lock);
-  
-  return free_mem;
-}
-
 int
 waitpid(int pid)
 {
