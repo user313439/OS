@@ -458,10 +458,10 @@ update_vruntime(struct proc *p, uint64 delta_runtime)
 {
   if(p->weight == 0)
     p->weight = 1024;
-  
+
   p->runtime += delta_runtime;
-  p->vruntime += (delta_runtime * 1024) / p->weight;
-  
+  p->vruntime += (delta_runtime * 1024 * 1024) / p->weight;
+
   if(p->time_slice > 0)
     p->time_slice--;
 }
@@ -471,8 +471,8 @@ update_vdeadline(struct proc *p)
 {
   if(p->weight == 0)
     p->weight = 1024;
-  
-  p->vdeadline = p->vruntime + (5 * 1024) / p->weight;
+
+  p->vdeadline = p->vruntime + (5 * 1024 * 1024) / p->weight;
 }
 
 void
