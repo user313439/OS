@@ -23,10 +23,13 @@ struct {
   struct run *freelist;
 } kmem;
 
+int freemem_count;
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  freemem_count = 0;
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -59,6 +62,7 @@ kfree(void *pa)
   acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
+  freemem_count++;
   release(&kmem.lock);
 }
 
@@ -72,8 +76,10 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    freemem_count--;
+  }
   release(&kmem.lock);
 
   if(r)

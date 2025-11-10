@@ -307,6 +307,26 @@ kfork(void)
   }
   np->sz = p->sz;
 
+  acquire(&mmap_lock);
+  for(i = 0; i < MAX_MMAP_AREA; i++) {
+    if(mmap_areas[i].p == p) {
+      int new_idx = -1;
+      for(int j = 0; j < MAX_MMAP_AREA; j++) {
+        if(mmap_areas[j].p == 0) {
+          new_idx = j;
+          break;
+        }
+      }
+      if(new_idx >= 0) {
+        mmap_areas[new_idx] = mmap_areas[i];
+        mmap_areas[new_idx].p = np;
+        if(mmap_areas[new_idx].f)
+          filedup(mmap_areas[new_idx].f);
+      }
+    }
+  }
+  release(&mmap_lock);
+
   np->runtime = 0;
   np->vruntime = p->vruntime;
   np->weight = p->weight;
@@ -383,6 +403,16 @@ kexit(int status)
   iput(p->cwd);
   end_op();
   p->cwd = 0;
+
+  acquire(&mmap_lock);
+  for(int i = 0; i < MAX_MMAP_AREA; i++) {
+    if(mmap_areas[i].p == p) {
+      if(mmap_areas[i].f)
+        fileclose(mmap_areas[i].f);
+      mmap_areas[i].p = 0;
+    }
+  }
+  release(&mmap_lock);
 
   acquire(&wait_lock);
 

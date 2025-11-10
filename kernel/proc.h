@@ -1,3 +1,13 @@
+struct mmap_area {
+  struct file *f;
+  uint64 addr;
+  int length;
+  int offset;
+  int prot;
+  int flags;
+  struct proc *p;
+};
+
 // Saved registers for kernel context switches.
 struct context {
   uint64 ra;
@@ -113,3 +123,6 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+
+extern struct mmap_area mmap_areas[MAX_MMAP_AREA];
+extern struct spinlock mmap_lock;

@@ -30,6 +30,9 @@ int setnice(int, int);
 void ps(int);
 int meminfo(void);
 int waitpid(int);
+int freemem(void);
+void* mmap(void*, int, int, int, int, int);
+int munmap(void*);
 
 // ulib.c
 int stat(const char*, struct stat*);

@@ -26,3 +26,6 @@
 #define SYS_meminfo 25
 #define SYS_waitpid 26
 #define SYS_sleep 27
+#define SYS_freemem 28
+#define SYS_mmap 29
+#define SYS_munmap 30

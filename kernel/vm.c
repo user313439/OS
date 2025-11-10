@@ -17,6 +17,9 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+struct mmap_area mmap_areas[MAX_MMAP_AREA];
+struct spinlock mmap_lock;
+
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -65,6 +68,10 @@ kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm)
 void
 kvminit(void)
 {
+  initlock(&mmap_lock, "mmap");
+  for(int i = 0; i < MAX_MMAP_AREA; i++) {
+    mmap_areas[i].p = 0;
+  }
   kernel_pagetable = kvmmake();
 }
 
@@ -483,4 +490,265 @@ ismapped(pagetable_t pagetable, uint64 va)
     return 1;
   }
   return 0;
+}
+
+static int
+find_free_mmap_area(void)
+{
+  for(int i = 0; i < MAX_MMAP_AREA; i++) {
+    if(mmap_areas[i].p == 0)
+      return i;
+  }
+  return -1;
+}
+
+static int
+read_file_to_page(struct file *f, uint64 offset, char *page)
+{
+  struct inode *ip = f->ip;
+  int n;
+
+  ilock(ip);
+  n = readi(ip, 0, (uint64)page, offset, PGSIZE);
+  iunlock(ip);
+
+  return n;
+}
+
+uint64
+do_mmap(uint64 addr, int length, int prot, int flags, int fd, int offset)
+{
+  struct proc *p = myproc();
+  struct file *f = 0;
+  int idx;
+  uint64 va;
+  char *mem;
+
+  if(addr % PGSIZE != 0)
+    return 0;
+
+  if(length <= 0)
+    return 0;
+
+  if(!(flags & MAP_ANONYMOUS)) {
+    if(fd < 0 || fd >= NOFILE || p->ofile[fd] == 0)
+      return 0;
+
+    f = p->ofile[fd];
+
+    if((prot & PROT_WRITE) && !f->writable)
+      return 0;
+    if((prot & PROT_READ) && !f->readable)
+      return 0;
+  } else {
+    if(fd != -1 || offset != 0)
+      return 0;
+  }
+
+  acquire(&mmap_lock);
+
+  idx = find_free_mmap_area();
+  if(idx < 0) {
+    release(&mmap_lock);
+    return 0;
+  }
+
+  mmap_areas[idx].f = f;
+  mmap_areas[idx].addr = MMAPBASE + addr;
+  mmap_areas[idx].length = length;
+  mmap_areas[idx].offset = offset;
+  mmap_areas[idx].prot = prot;
+  mmap_areas[idx].flags = flags;
+  mmap_areas[idx].p = p;
+
+  if(f)
+    filedup(f);
+
+  release(&mmap_lock);
+
+  if(flags & MAP_POPULATE) {
+    uint64 start_va = MMAPBASE + addr;
+    int pte_flags = PTE_U;
+
+    if(prot & PROT_READ)
+      pte_flags |= PTE_R;
+    if(prot & PROT_WRITE)
+      pte_flags |= PTE_W;
+    if(!(prot & PROT_WRITE))
+      pte_flags |= PTE_R;
+
+    for(va = start_va; va < start_va + length; va += PGSIZE) {
+      mem = kalloc();
+      if(mem == 0) {
+        acquire(&mmap_lock);
+        if(f)
+          fileclose(f);
+        mmap_areas[idx].p = 0;
+        release(&mmap_lock);
+
+        uvmunmap(p->pagetable, start_va, (va - start_va) / PGSIZE, 1);
+        return 0;
+      }
+
+      memset(mem, 0, PGSIZE);
+
+      if(!(flags & MAP_ANONYMOUS)) {
+        int file_offset = offset + (va - start_va);
+        read_file_to_page(f, file_offset, mem);
+      }
+
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, pte_flags) != 0) {
+        kfree(mem);
+        acquire(&mmap_lock);
+        if(f)
+          fileclose(f);
+        mmap_areas[idx].p = 0;
+        release(&mmap_lock);
+
+        uvmunmap(p->pagetable, start_va, (va - start_va) / PGSIZE, 1);
+        return 0;
+      }
+    }
+  }
+
+  return MMAPBASE + addr;
+}
+
+static struct mmap_area*
+find_mmap_area(struct proc *p, uint64 va)
+{
+  for(int i = 0; i < MAX_MMAP_AREA; i++) {
+    if(mmap_areas[i].p == p) {
+      uint64 start = mmap_areas[i].addr;
+      uint64 end = start + mmap_areas[i].length;
+      if(va >= start && va < end)
+        return &mmap_areas[i];
+    }
+  }
+  return 0;
+}
+
+int
+handle_page_fault(uint64 va, int scause)
+{
+  struct proc *p = myproc();
+  struct mmap_area *ma;
+  char *mem;
+  uint64 page_va;
+  int pte_flags;
+
+  page_va = PGROUNDDOWN(va);
+
+  acquire(&mmap_lock);
+  ma = find_mmap_area(p, page_va);
+
+  if(ma == 0) {
+    release(&mmap_lock);
+    return -1;
+  }
+
+  if(scause == 15) {
+    if(!(ma->prot & PROT_WRITE)) {
+      release(&mmap_lock);
+      return -1;
+    }
+  }
+
+  if(walkaddr(p->pagetable, page_va) != 0) {
+    release(&mmap_lock);
+    return 1;
+  }
+
+  release(&mmap_lock);
+
+  mem = kalloc();
+  if(mem == 0)
+    return -1;
+
+  memset(mem, 0, PGSIZE);
+
+  acquire(&mmap_lock);
+
+  ma = find_mmap_area(p, page_va);
+  if(ma == 0) {
+    release(&mmap_lock);
+    kfree(mem);
+    return -1;
+  }
+
+  if(!(ma->flags & MAP_ANONYMOUS)) {
+    int file_offset = ma->offset + (page_va - ma->addr);
+    release(&mmap_lock);
+    read_file_to_page(ma->f, file_offset, mem);
+    acquire(&mmap_lock);
+
+    ma = find_mmap_area(p, page_va);
+    if(ma == 0) {
+      release(&mmap_lock);
+      kfree(mem);
+      return -1;
+    }
+  }
+
+  pte_flags = PTE_U;
+  if(ma->prot & PROT_READ)
+    pte_flags |= PTE_R;
+  if(ma->prot & PROT_WRITE)
+    pte_flags |= PTE_W;
+  if(!(ma->prot & PROT_WRITE))
+    pte_flags |= PTE_R;
+
+  release(&mmap_lock);
+
+  if(mappages(p->pagetable, page_va, PGSIZE, (uint64)mem, pte_flags) != 0) {
+    kfree(mem);
+    return -1;
+  }
+
+  return 1;
+}
+
+int
+do_munmap(uint64 addr)
+{
+  struct proc *p = myproc();
+  int idx = -1;
+
+  if(addr % PGSIZE != 0)
+    return -1;
+
+  acquire(&mmap_lock);
+
+  for(int i = 0; i < MAX_MMAP_AREA; i++) {
+    if(mmap_areas[i].p == p && mmap_areas[i].addr == addr) {
+      idx = i;
+      break;
+    }
+  }
+
+  if(idx < 0) {
+    release(&mmap_lock);
+    return -1;
+  }
+
+  struct mmap_area ma = mmap_areas[idx];
+
+  mmap_areas[idx].p = 0;
+
+  if(ma.f)
+    fileclose(ma.f);
+
+  release(&mmap_lock);
+
+  uint64 va;
+  for(va = ma.addr; va < ma.addr + ma.length; va += PGSIZE) {
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if(pte && (*pte & PTE_V)) {
+      uint64 pa = PTE2PA(*pte);
+      kfree((void*)pa);
+      *pte = 0;
+    }
+  }
+
+  return 1;
 }

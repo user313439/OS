@@ -172,7 +172,15 @@ uint64
 sys_waitpid(void)
 {
   int pid;
-  
+
   argint(0, &pid);
   return waitpid(pid);
+}
+
+extern int freemem_count;
+
+uint64
+sys_freemem(void)
+{
+  return freemem_count;
 }
