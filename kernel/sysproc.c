@@ -142,7 +142,7 @@ uint64
 sys_meminfo(void)
 {
   uint64 free_mem = meminfo();
-  printf("available memory: %d bytes\n", free_mem);
+  printf("available memory: %ld bytes\n", free_mem);
   return free_mem;
 }
 
