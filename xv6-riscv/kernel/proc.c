@@ -26,6 +26,29 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+uint64 min_vruntime = 0;
+uint64 total_weight = 0;
+uint64 lag_numerator = 0;
+
+static const uint64 nice_to_weight[40] = {
+  88761, 71755, 56483, 46273, 36291,
+  29154, 23254, 18705, 14949, 11916,
+  9548, 7620, 6100, 4904, 3906,
+  3121, 2501, 1991, 1586, 1277,
+  1024, 820, 655, 526, 423,
+  335, 272, 215, 172, 137,
+  110, 87, 70, 56, 45,
+  36, 29, 23, 18, 15
+};
+
+uint64
+get_weight(int nice)
+{
+  if(nice < 0 || nice > 39)
+    return 1024;
+  return nice_to_weight[nice];
+}
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -124,6 +147,14 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->nice = 20;
+  p->runtime = 0;
+  p->vruntime = 0;
+  p->vdeadline = 0;
+  p->time_slice = 5;
+  p->weight = 1024;
+  p->is_eligible = 1;
+  p->total_ticks = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -276,6 +307,14 @@ kfork(void)
   }
   np->sz = p->sz;
 
+  np->runtime = 0;
+  np->vruntime = p->vruntime;
+  np->weight = p->weight;
+  np->nice = p->nice;
+  np->time_slice = 5;
+  np->total_ticks = 0;
+  update_vdeadline(np);
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -414,6 +453,73 @@ kwait(uint64 addr)
   }
 }
 
+void
+update_vruntime(struct proc *p, uint64 delta_runtime)
+{
+  if(p->weight == 0)
+    p->weight = 1024;
+  
+  p->runtime += delta_runtime;
+  p->vruntime += (delta_runtime * 1024) / p->weight;
+  
+  if(p->time_slice > 0)
+    p->time_slice--;
+}
+
+void
+update_vdeadline(struct proc *p)
+{
+  if(p->weight == 0)
+    p->weight = 1024;
+  
+  p->vdeadline = p->vruntime + (5 * 1024) / p->weight;
+}
+
+void
+update_eligibility(void)
+{
+  struct proc *p;
+  uint64 sum_weight = 0;
+  uint64 sum_lag_num = 0;
+  uint64 min_vr = 0xFFFFFFFFFFFFFFFF;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state == RUNNABLE || p->state == RUNNING) {
+      if(p->vruntime < min_vr)
+        min_vr = p->vruntime;
+      sum_weight += p->weight;
+    }
+    release(&p->lock);
+  }
+  
+  min_vruntime = min_vr;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state == RUNNABLE || p->state == RUNNING) {
+      sum_lag_num += (p->vruntime - min_vruntime) * p->weight;
+    }
+    release(&p->lock);
+  }
+  
+  lag_numerator = sum_lag_num;
+  total_weight = sum_weight;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state == RUNNABLE || p->state == RUNNING) {
+      if (total_weight > 0) {
+        uint64 right_side = (p->vruntime - min_vruntime) * total_weight;
+        p->is_eligible = (lag_numerator >= right_side) ? 1 : 0;
+      } else {
+        p->is_eligible = 1;
+      }
+    }
+    release(&p->lock);
+  }
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -426,38 +532,39 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-
+  
   c->proc = 0;
   for(;;){
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
     intr_on();
-    intr_off();
-
-    int found = 0;
+    
+    update_eligibility();
+    
+    struct proc *selected = 0;
+    uint64 earliest_vdeadline = 0xFFFFFFFFFFFFFFFF;
+    
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+      if(p->state == RUNNABLE && p->is_eligible) {
+        if(p->vdeadline < earliest_vdeadline) {
+          if(selected != 0)
+            release(&selected->lock);
+          earliest_vdeadline = p->vdeadline;
+          selected = p;
+        } else {
+          release(&p->lock);
+        }
+      } else {
+        release(&p->lock);
       }
-      release(&p->lock);
     }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
-      asm volatile("wfi");
+    
+    if(selected != 0) {
+      selected->state = RUNNING;
+      selected->time_slice = 5;
+      c->proc = selected;
+      swtch(&c->context, &selected->context);
+      c->proc = 0;
+      release(&selected->lock);
     }
   }
 }
@@ -580,6 +687,8 @@ wakeup(void *chan)
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+        p->time_slice = 5;
+        update_vdeadline(p);
       }
       release(&p->lock);
     }
@@ -686,5 +795,151 @@ procdump(void)
       state = "???";
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
+  }
+}
+
+int
+getnice(int pid)
+{
+  struct proc *p;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->pid == pid) {
+      int nice = p->nice;
+      release(&p->lock);
+      return nice;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+int
+setnice(int pid, int value)
+{
+  struct proc *p;
+  
+  if(value < 0 || value > 39)
+    return -1;
+  
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->pid == pid) {
+      p->nice = value;
+      p->weight = get_weight(value);
+      update_vdeadline(p);
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}
+
+void
+ps(int pid)
+{
+  struct proc *p;
+  
+  if(pid == 0) {
+    printf("name\tpid\tstate\t\tpriority\truntime/weight\truntime\tvruntime\tvdeadline\tis_eligible\ttick\n");
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state != UNUSED) {
+        printf("%s\t%d\t", p->name, p->pid);
+        if(p->state == SLEEPING)
+          printf("sleep\t\t");
+        else if(p->state == RUNNABLE)
+          printf("runble\t\t");
+        else if(p->state == RUNNING)
+          printf("run\t\t");
+        else
+          printf("zombie\t\t");
+        
+        uint64 runtime_over_weight = 0;
+        if (p->weight != 0) {
+            runtime_over_weight = (p->runtime * 1000 * 1024) / p->weight;
+        }
+        
+        printf("%d\t%l\t%l\t%l\t%l\t%s\t%l\n",
+               p->nice,
+               runtime_over_weight,
+               p->runtime * 1000,
+               p->vruntime * 1000,
+               p->vdeadline * 1000,
+               p->is_eligible ? "true" : "false",
+               p->total_ticks * 1000);
+      }
+      release(&p->lock);
+    }
+  } else {
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->pid == pid && p->state != UNUSED) {
+        printf("name\tpid\tstate\t\tpriority\truntime/weight\truntime\tvruntime\tvdeadline\tis_eligible\ttick\n");
+        printf("%s\t%d\t", p->name, p->pid);
+        if(p->state == SLEEPING)
+          printf("sleep\t\t");
+        else if(p->state == RUNNABLE)
+          printf("runble\t\t");
+        else if(p->state == RUNNING)
+          printf("run\t\t");
+        else
+          printf("zombie\t\t");
+        
+        uint64 runtime_over_weight = 0;
+        if (p->weight != 0) {
+            runtime_over_weight = (p->runtime * 1000 * 1024) / p->weight;
+        }
+        
+        printf("%d\t%l\t%l\t%l\t%l\t%s\t%l\n",
+               p->nice,
+               runtime_over_weight,
+               p->runtime * 1000,
+               p->vruntime * 1000,
+               p->vdeadline * 1000,
+               p->is_eligible ? "true" : "false",
+               p->total_ticks * 1000);
+        release(&p->lock);
+        return;
+      }
+      release(&p->lock);
+    }
+  }
+}
+
+int
+waitpid(int pid)
+{
+  struct proc *np;
+  int found;
+  struct proc *p = myproc();
+  
+  acquire(&wait_lock);
+  
+  for(;;) {
+    found = 0;
+    for(np = proc; np < &proc[NPROC]; np++) {
+      acquire(&np->lock);
+      if(np->pid == pid) {
+        found = 1;
+        if(np->state == ZOMBIE) {
+          release(&np->lock);
+          release(&wait_lock);
+          return 0;
+        }
+        release(&np->lock);
+        break;
+      }
+      release(&np->lock);
+    }
+    
+    if(!found) {
+      release(&wait_lock);
+      return -1;
+    }
+    
+    sleep(p, &wait_lock);
   }
 }

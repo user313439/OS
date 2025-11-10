@@ -81,8 +81,15 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2) {
+    p->total_ticks++;
+    update_vruntime(p, 1);
+    if(p->time_slice == 0) {
+      update_vdeadline(p);
+      p->time_slice = 5;
+      yield();
+    }
+  }
 
   prepare_return();
 
@@ -164,17 +171,12 @@ kerneltrap()
 void
 clockintr()
 {
-  if(cpuid() == 0){
-    acquire(&tickslock);
-    ticks++;
-    wakeup(&ticks);
-    release(&tickslock);
-  }
-
-  // ask for the next timer interrupt. this also clears
-  // the interrupt request. 1000000 is about a tenth
-  // of a second.
-  w_stimecmp(r_time() + 1000000);
+  acquire(&tickslock);
+  ticks++;
+  wakeup(&ticks);
+  release(&tickslock);
+  
+  w_stimecmp(r_time() + 100000);
 }
 
 // check if it's an external interrupt or software interrupt,
