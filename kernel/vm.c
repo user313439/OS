@@ -754,7 +754,15 @@ do_munmap(uint64 addr)
   if(f_to_close)
     fileclose(f_to_close);
 
-  uvmunmap(p->pagetable, ma.addr, ma.length / PGSIZE, 1);
+  uint64 va;
+  for(va = ma.addr; va < ma.addr + ma.length; va += PGSIZE) {
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if(pte && (*pte & PTE_V)) {
+      uint64 pa = PTE2PA(*pte);
+      kfree((void*)pa);
+      *pte = 0;
+    }
+  }
 
   return 1;
 }
