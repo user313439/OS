@@ -582,11 +582,15 @@ do_mmap(uint64 addr, int length, int prot, int flags, int fd, int offset)
     for(va = start_va; va < start_va + length; va += PGSIZE) {
       mem = kalloc();
       if(mem == 0) {
+        struct file *f_to_close = 0;
         acquire(&mmap_lock);
         if(f)
-          fileclose(f);
+          f_to_close = f;
         mmap_areas[idx].p = 0;
         release(&mmap_lock);
+
+        if(f_to_close)
+          fileclose(f_to_close);
 
         uvmunmap(p->pagetable, start_va, (va - start_va) / PGSIZE, 1);
         return 0;
@@ -601,11 +605,15 @@ do_mmap(uint64 addr, int length, int prot, int flags, int fd, int offset)
 
       if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, pte_flags) != 0) {
         kfree(mem);
+        struct file *f_to_close = 0;
         acquire(&mmap_lock);
         if(f)
-          fileclose(f);
+          f_to_close = f;
         mmap_areas[idx].p = 0;
         release(&mmap_lock);
+
+        if(f_to_close)
+          fileclose(f_to_close);
 
         uvmunmap(p->pagetable, start_va, (va - start_va) / PGSIZE, 1);
         return 0;
@@ -715,6 +723,7 @@ do_munmap(uint64 addr)
 {
   struct proc *p = myproc();
   int idx = -1;
+  struct file *f_to_close = 0;
 
   if(addr % PGSIZE != 0)
     return -1;
@@ -738,9 +747,12 @@ do_munmap(uint64 addr)
   mmap_areas[idx].p = 0;
 
   if(ma.f)
-    fileclose(ma.f);
+    f_to_close = ma.f;
 
   release(&mmap_lock);
+
+  if(f_to_close)
+    fileclose(f_to_close);
 
   uint64 va;
   for(va = ma.addr; va < ma.addr + ma.length; va += PGSIZE) {

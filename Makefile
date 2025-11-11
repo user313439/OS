@@ -145,6 +145,7 @@ UPROGS=\
 	$U/_dorphan\
 	$U/_mytest\
 	$U/_mmaptest\
+	$U/_freemem\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

@@ -404,15 +404,23 @@ kexit(int status)
   end_op();
   p->cwd = 0;
 
+  struct file *files_to_close[MAX_MMAP_AREA];
+  int num_files_to_close = 0;
+
   acquire(&mmap_lock);
   for(int i = 0; i < MAX_MMAP_AREA; i++) {
     if(mmap_areas[i].p == p) {
-      if(mmap_areas[i].f)
-        fileclose(mmap_areas[i].f);
+      if(mmap_areas[i].f) {
+        files_to_close[num_files_to_close++] = mmap_areas[i].f;
+      }
       mmap_areas[i].p = 0;
     }
   }
   release(&mmap_lock);
+
+  for(int i = 0; i < num_files_to_close; i++) {
+    fileclose(files_to_close[i]);
+  }
 
   acquire(&wait_lock);
 
