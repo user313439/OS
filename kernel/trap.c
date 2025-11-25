@@ -10,6 +10,7 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+extern struct page pages[PHYSTOP/PGSIZE];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
