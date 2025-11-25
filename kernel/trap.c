@@ -100,6 +100,7 @@ usertrap(void)
       goto bad;
     }
 
+    printf("[SWAPIN] va=0x%p blkno=%d\n", PGROUNDDOWN(va), blkno);
     swapread((uint64)mem, blkno);
 
     uint64 flags = PTE_FLAGS(*pte);
