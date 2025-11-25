@@ -66,6 +66,10 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void            lru_add(struct page*);
+void            lru_remove(struct page*);
+int             bitmap_alloc(void);
+void            bitmap_free(int);
 
 // log.c
 void            initlog(int, struct superblock*);

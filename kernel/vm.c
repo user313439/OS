@@ -163,6 +163,12 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if(*pte & PTE_V)
       panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
+    if(perm & PTE_U) {
+      struct page *pg = &pages[pa/PGSIZE];
+      pg->pagetable = pagetable;
+      pg->vaddr = (char*)a;
+      lru_add(pg);
+    }
     if(a == last)
       break;
     a += PGSIZE;
@@ -186,12 +192,20 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+    if((*pte & PTE_V) == 0) {
+      if(*pte != 0) {
+        int blkno = *pte >> 10;
+        bitmap_free(blkno);
+        *pte = 0;
+      }
+      continue;
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
+      struct page *pg = &pages[pa/PGSIZE];
+      lru_remove(pg);
       kfree((void*)pa);
     }
     *pte = 0;
@@ -320,8 +334,37 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    if((*pte & PTE_V) == 0) {
+      if(*pte != 0) {
+        int old_blkno = *pte >> 10;
+
+        mem = kalloc();
+        if(mem == 0)
+          goto err;
+
+        swapread((uint64)mem, old_blkno);
+
+        int new_blkno = bitmap_alloc();
+        if(new_blkno < 0) {
+          kfree(mem);
+          goto err;
+        }
+
+        swapwrite((uint64)mem, new_blkno);
+        kfree(mem);
+
+        flags = PTE_FLAGS(*pte);
+        if(mappages(new, i, PGSIZE, 0, flags) != 0) {
+          bitmap_free(new_blkno);
+          goto err;
+        }
+
+        pte_t *new_pte = walk(new, i, 0);
+        *new_pte = (new_blkno << 10) | flags;
+        *new_pte &= ~PTE_V;
+      }
+      continue;
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
