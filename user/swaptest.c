@@ -3,7 +3,7 @@
 #include "user/user.h"
 
 #define PGSIZE 4096
-#define NPAGE 200
+#define NPAGE 50
 
 int
 main(int argc, char *argv[])
@@ -11,7 +11,7 @@ main(int argc, char *argv[])
     printf("=== PA4 Swap Test ===\n");
 
     printf("\nTest 1: Allocate %d pages\n", NPAGE);
-    static char *pages[NPAGE];
+    char *pages[NPAGE];
 
     for(int i = 0; i < NPAGE; i++) {
         pages[i] = sbrk(PGSIZE);

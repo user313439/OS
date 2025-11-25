@@ -91,7 +91,6 @@ lru_add(struct page *pg)
     page_lru_head = pg;
     pg->next = pg;
     pg->prev = pg;
-    printf("[LRU_ADD] First page added to LRU\n");
   } else {
     struct page *tail = page_lru_head->prev;
     tail->next = pg;
@@ -149,11 +148,8 @@ bitmap_free(int blkno)
 struct page*
 select_victim(void)
 {
-  if(page_lru_head == 0) {
-    printf("[SELECT_VICTIM] LRU list is empty!\n");
+  if(page_lru_head == 0)
     return 0;
-  }
-  printf("[SELECT_VICTIM] LRU list has pages\n");
 
   struct page *pg = page_lru_head;
   struct page *start = pg;
@@ -199,7 +195,6 @@ swapout(void)
   if(blkno < 0)
     return 0;
 
-  printf("[SWAPOUT] va=0x%lx blkno=%d\n", (uint64)victim->vaddr, blkno);
   swapwrite(pa, blkno);
 
   lru_remove(victim);
@@ -227,12 +222,8 @@ kalloc(void)
     kmem.freelist = r->next;
   else {
     release(&kmem.lock);
-    printf("[KALLOC] Out of memory, calling swapout\n");
-    if(!swapout()) {
-      printf("[KALLOC] Swapout failed\n");
+    if(!swapout())
       return 0;
-    }
-    printf("[KALLOC] Swapout succeeded\n");
     acquire(&kmem.lock);
     r = kmem.freelist;
     if(r)
