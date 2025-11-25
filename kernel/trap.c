@@ -70,48 +70,32 @@ usertrap(void)
     // ok
   } else if(r_scause() == 13 || r_scause() == 15) {
     uint64 va = r_stval();
-
-    if(va >= p->sz || va >= MAXVA) {
-      setkilled(p);
-      goto bad;
-    }
-
     pte_t *pte = walk(p->pagetable, va, 0);
-    if(pte == 0) {
-      setkilled(p);
+
+    if(pte && (*pte & PTE_V) == 0 && *pte != 0) {
+      int blkno = *pte >> 10;
+
+      char *mem = kalloc();
+      if(mem == 0) {
+        setkilled(p);
+        goto bad;
+      }
+
+      printf("[SWAPIN] va=0x%lx blkno=%d\n", PGROUNDDOWN(va), blkno);
+      swapread((uint64)mem, blkno);
+
+      uint64 flags = PTE_FLAGS(*pte);
+      *pte = PA2PTE((uint64)mem) | flags | PTE_V;
+
+      bitmap_free(blkno);
+
+      struct page *pg = &pages[(uint64)mem/PGSIZE];
+      pg->pagetable = p->pagetable;
+      pg->vaddr = (char*)PGROUNDDOWN(va);
+      lru_add(pg);
+    } else {
       goto bad;
     }
-
-    if(*pte & PTE_V) {
-      setkilled(p);
-      goto bad;
-    }
-
-    if(*pte == 0) {
-      setkilled(p);
-      goto bad;
-    }
-
-    int blkno = *pte >> 10;
-
-    char *mem = kalloc();
-    if(mem == 0) {
-      setkilled(p);
-      goto bad;
-    }
-
-    printf("[SWAPIN] va=0x%lx blkno=%d\n", PGROUNDDOWN(va), blkno);
-    swapread((uint64)mem, blkno);
-
-    uint64 flags = PTE_FLAGS(*pte);
-    *pte = PA2PTE((uint64)mem) | flags | PTE_V;
-
-    bitmap_free(blkno);
-
-    struct page *pg = &pages[(uint64)mem/PGSIZE];
-    pg->pagetable = p->pagetable;
-    pg->vaddr = (char*)PGROUNDDOWN(va);
-    lru_add(pg);
   } else {
 bad:
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
