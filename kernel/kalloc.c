@@ -39,10 +39,10 @@ kinit()
   initlock(&kmem.lock, "kmem");
   initlock(&lru_lock, "lru");
   page_lru_head = 0;
+  freerange(end, (void*)PHYSTOP);
   swap_bitmap = kalloc();
   if(swap_bitmap)
     memset(swap_bitmap, 0, PGSIZE);
-  freerange(end, (void*)PHYSTOP);
 }
 
 void
