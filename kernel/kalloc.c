@@ -39,6 +39,12 @@ kinit()
   initlock(&kmem.lock, "kmem");
   initlock(&lru_lock, "lru");
   page_lru_head = 0;
+  for(int i = 0; i < PHYSTOP/PGSIZE; i++) {
+    pages[i].next = 0;
+    pages[i].prev = 0;
+    pages[i].pagetable = 0;
+    pages[i].vaddr = 0;
+  }
   freerange(end, (void*)PHYSTOP);
   swap_bitmap = kalloc();
   if(swap_bitmap)
@@ -99,6 +105,10 @@ void
 lru_remove(struct page *pg)
 {
   acquire(&lru_lock);
+  if(pg->next == 0 || pg->prev == 0) {
+    release(&lru_lock);
+    return;
+  }
   if(pg->next == pg) {
     page_lru_head = 0;
   } else {
@@ -142,16 +152,25 @@ select_victim(void)
     return 0;
 
   struct page *pg = page_lru_head;
+  struct page *start = pg;
+  int scanned = 0;
 
   while(1) {
     pte_t *pte = walk(pg->pagetable, (uint64)pg->vaddr, 0);
-    if(pte == 0)
-      panic("select_victim: pte");
+    if(pte == 0) {
+      page_lru_head = pg->next;
+      return pg;
+    }
 
     if(*pte & PTE_A) {
       *pte &= ~PTE_A;
       page_lru_head = pg->next;
       pg = pg->next;
+      scanned++;
+      if(pg == start) {
+        page_lru_head = pg->next;
+        return pg;
+      }
     } else {
       page_lru_head = pg->next;
       return pg;
