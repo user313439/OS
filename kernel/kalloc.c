@@ -195,7 +195,7 @@ swapout(void)
   if(blkno < 0)
     return 0;
 
-  printf("[SWAPOUT] va=0x%p blkno=%d\n", victim->vaddr, blkno);
+  printf("[SWAPOUT] va=0x%lx blkno=%d\n", (uint64)victim->vaddr, blkno);
   swapwrite(pa, blkno);
 
   lru_remove(victim);
