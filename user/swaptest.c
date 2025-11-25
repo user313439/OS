@@ -3,7 +3,7 @@
 #include "user/user.h"
 
 #define PGSIZE 4096
-#define NPAGE 50
+#define NPAGE 1000
 
 int
 main(int argc, char *argv[])
